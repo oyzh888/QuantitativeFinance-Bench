@@ -8,7 +8,7 @@ We're evaluating [Novita Agent Sandbox](https://novita.ai/docs/guides/sandbox-ov
 
 ---
 
-## Hello World Test (2026-03-21)
+## Test 1: Hello World (2026-03-21)
 
 ### Setup
 
@@ -24,78 +24,131 @@ from novita_sandbox.code_interpreter import Sandbox
 
 sandbox = Sandbox.create()
 print(f"Sandbox created: {sandbox.sandbox_id}")
-```
 
-### Test Script (`/tmp/novita_test.py`)
-
-```python
-import os
-os.environ['NOVITA_API_KEY'] = 'sk_RlPbM...'
-
-from novita_sandbox.code_interpreter import Sandbox
-
-print("Creating sandbox...")
-sandbox = Sandbox.create()
-print(f"Sandbox created: {sandbox.sandbox_id}")
-
-# Test 1: run Python code directly
+# Test run_code
 result = sandbox.run_code("print('hello from novita sandbox!')")
-print("run_code result:", result.logs)
+print(result.logs)  # stdout: ['hello from novita sandbox!\n']
 
-# Test 2: run shell command
+# Test shell command
 result2 = sandbox.commands.run('echo "shell works!" && python3 --version')
-print("commands.run result:", result2)
+print(result2.stdout)  # shell works! / Python 3.12.11
 
 sandbox.kill()
-print("Done!")
 ```
+
+### Result
+
+```
+Sandbox created: irxdmbwh61swyd6tqtxzm-c81df28e
+run_code result: Logs(stdout: ['hello from novita sandbox!\n'], stderr: [])
+commands.run result: CommandResult(stderr='', stdout='shell works!\nPython 3.12.11\n', exit_code=0, error='')
+```
+
+**Sandbox cold-start: ~1.2s. API works exactly as documented.**
+
+---
+
+## Test 2: Full QFBench Task — `bollinger-backtest-aapl` (2026-03-21)
+
+Tested the complete pipeline: upload data → run oracle → run verifier → read reward.
+
+### Test Script
+
+```python
+import os, time
+os.environ['NOVITA_API_KEY'] = 'sk_...'
+
+from novita_sandbox.code_interpreter import Sandbox
+from novita_sandbox.core.sandbox.filesystem.filesystem import WriteEntry
+
+TASK_DIR = "./tasks/bollinger-backtest-aapl"
+
+# 1. Create sandbox
+sandbox = Sandbox.create()
+
+# 2. Upload task files (use user="root" for system paths)
+sandbox.files.write_files([
+    WriteEntry(path="/app/aapl_prices.csv", data=open(f"{TASK_DIR}/environment/data/aapl_prices.csv", "rb").read()),
+    WriteEntry(path="/app/solve.sh",        data=open(f"{TASK_DIR}/solution/solve.sh", "rb").read()),
+    WriteEntry(path="/tests/test.sh",       data=open(f"{TASK_DIR}/tests/test.sh", "rb").read()),
+    WriteEntry(path="/tests/test_outputs.py", data=open(f"{TASK_DIR}/tests/test_outputs.py", "rb").read()),
+], user="root")
+
+# Create required directories
+sandbox.commands.run("mkdir -p /app/output /logs/verifier", user="root")
+
+# 3. Run oracle
+result = sandbox.commands.run("cd /app && bash /app/solve.sh", timeout=300, user="root")
+print(f"oracle exit_code: {result.exit_code}")
+
+# 4. Run verifier
+verify = sandbox.commands.run("cd /app && bash /tests/test.sh", timeout=300, user="root")
+print(f"verifier exit_code: {verify.exit_code}")
+
+# 5. Read reward
+reward = float(sandbox.files.read("/logs/verifier/reward.txt").strip())
+print(f"reward: {reward}")  # 1.0 = PASS
+
+# 6. Cleanup
+sandbox.kill()
+```
+
+### ⚠️ API Gotchas
+
+| Issue | Solution |
+|-------|----------|
+| `ImportError: cannot import name 'SandboxFile'` | Use `WriteEntry` from `novita_sandbox.core.sandbox.filesystem.filesystem` |
+| `mkdir: cannot create directory '/logs': Permission denied` | Add `user="root"` to all `commands.run()` and `files.write_files()` calls that touch system paths |
 
 ### Results
 
 ```
-Creating sandbox...
-Sandbox created: irxdmbwh61swyd6tqtxzm-c81df28e
-run_code result: Logs(stdout: ['hello from novita sandbox!\n'], stderr: [])
-commands.run result: CommandResult(stderr='', stdout='shell works!\nPython 3.12.11\n', exit_code=0, error='')
-Done!
+============================================================
+SUMMARY
+============================================================
+  Task:          bollinger-backtest-aapl
+  Reward:        1.0
+  Total time:    32.8s (0.5 min)
+    - sandbox create: 0.6s
+    - file upload:    5.1s
+    - oracle run:     12.9s
+    - verifier run:   13.3s
+  Estimated cost: $0.00106
+============================================================
 ```
 
-**Everything works as documented. API is straightforward.**
+**✅ 35/35 tests passed. Oracle reward = 1.0. Full pipeline works.**
 
 ---
 
-## Performance & Cost
+## Performance & Cost Summary
 
-### Timing (second run with warm SDK)
+### Timing Breakdown (bollinger-backtest-aapl oracle run)
 
 | Step | Time |
 |------|------|
-| `Sandbox.create()` | 1.2s |
-| `run_code()` | 1.8s |
-| `commands.run()` | 0.4s |
-| `sandbox.kill()` | ~0.1s |
-| **Total** | **~3.9s** |
+| `Sandbox.create()` | 0.6s |
+| File upload (4 files, ~155KB total) | 5.1s |
+| Oracle (`solve.sh`, Python compute) | 12.9s |
+| Verifier (`test.sh`, pytest 35 tests) | 13.3s |
+| **Total** | **~33s** |
 
-Sandbox cold-start is **~1.2 seconds** — fast enough for parallel task orchestration.
+### Cost
 
-### Cost for Hello World Run
+| Run | Duration | Estimated Cost |
+|-----|----------|----------------|
+| Hello World | 3.9s | $0.000044 |
+| bollinger-backtest-aapl oracle | 32.8s | $0.00106 |
 
-- Sandbox was alive for ~3.9 seconds
-- Default spec: 1 vCPU + 512MiB RAM
-- CPU: `$0.0000098/s × 3.9s = $0.0000382`
-- RAM: `$0.0000016/s × 3.9s = $0.0000062`
-- **Total: ~$0.000044 (less than half a cent per thousand runs)**
+Spec used: 2 vCPU (`$0.0000196/s`) + 4GB RAM (`$0.0000128/s`) = `$0.0000324/s`
 
-### Projected Cost for Full QFBench Benchmark
+### Projected Cost: Full Benchmark Sweep
 
-Task spec from `task.toml`: 2 vCPU / 4GB RAM, agent timeout 900s, verifier timeout 300s
-
-| Scenario | Per-task cost | 100 tasks × 3 models |
-|----------|--------------|----------------------|
-| Fast task (3 min) | ~$0.006 | ~$1.80 |
+| Scenario | Per-task | 100 tasks × 3 models |
+|----------|----------|----------------------|
+| Fast (3 min) | ~$0.006 | ~$1.80 |
 | Typical (5 min) | ~$0.010 | ~$3.00 |
-| Slow task (8 min) | ~$0.016 | ~$4.80 |
-| Worst case (15 min) | ~$0.029 | ~$8.70 |
+| Slow (8 min) | ~$0.016 | ~$4.80 |
 
 **~$3–5 per complete benchmark sweep** (compute only; LLM token costs are separate and larger).
 
@@ -121,45 +174,19 @@ parallel dispatch (100 concurrent) → Novita API → collect rewards
 |-----------------|-------------------|
 | `environment/Dockerfile` | Custom template (pre-built once) |
 | `environment/data/` | `sandbox.files.write_files()` |
-| `solution/solve.sh` (oracle) | `sandbox.commands.run('bash /app/solve.sh')` |
-| `tests/test.sh` | `sandbox.commands.run('bash /tests/test.sh')` |
+| `solution/solve.sh` (oracle) | `sandbox.commands.run('bash /app/solve.sh', user='root')` |
+| `tests/test.sh` | `sandbox.commands.run('bash /tests/test.sh', user='root')` |
 | `reward.txt` | `sandbox.files.read('/logs/verifier/reward.txt')` |
-
-### Key Novita API calls needed
-
-```python
-# 1. Create sandbox (with custom template for finance stack)
-sandbox = Sandbox.create(template_id="finance-bench-v1")
-
-# 2. Upload task data
-sandbox.files.write_files([
-    SandboxFile(path="/app/data.json", content=open("data.json").read()),
-    SandboxFile(path="/tests/test_outputs.py", content=open("test_outputs.py").read()),
-    SandboxFile(path="/tests/test.sh", content=open("test.sh").read()),
-])
-
-# 3. Run oracle / agent
-result = sandbox.commands.run("bash /app/solve.sh", timeout=900)
-
-# 4. Run verifier
-verifier = sandbox.commands.run("bash /tests/test.sh", timeout=300)
-
-# 5. Collect reward
-reward_txt = sandbox.files.read("/logs/verifier/reward.txt")
-reward = float(reward_txt.strip())
-
-# 6. Cleanup
-sandbox.kill()
-```
 
 ---
 
 ## Next Steps
 
-- [ ] Build custom Novita template with the finance-bench-sandbox Python stack (numpy, pandas, scipy, ta-lib, etc.)
-- [ ] Test full task end-to-end: `black-scholes-pricing` (upload data → run oracle → run verifier → read reward)
+- [ ] Build custom Novita template with the finance-bench-sandbox Python stack (numpy, pandas, scipy, ta-lib, etc.) — currently using base sandbox which doesn't have TA-Lib
+- [ ] Test a task that requires TA-Lib (e.g. `rsi-signal-backtest`)
 - [ ] Implement parallel task runner with `asyncio` + semaphore for concurrent dispatch
-- [ ] Benchmark: compare timing/cost of Novita vs current DO droplet
+- [ ] Benchmark: compare timing/cost vs current DO droplet serial run
+- [ ] Wire up LLM agent (claude-haiku/sonnet) as the solver instead of oracle
 
 ---
 
@@ -167,4 +194,3 @@ sandbox.kill()
 
 - **Account:** aitist.dev@gmail.com
 - **User ID:** 5918c2f7-3988-4efe-954c-6b025bb8d203
-- **API Key:** stored in `/tmp/novita_test.py` (do not commit key to repo)
