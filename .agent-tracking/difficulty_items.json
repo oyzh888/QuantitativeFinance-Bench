@@ -1,0 +1,56 @@
+{
+  "last_updated": "2026-03-22",
+  "research_status": "pending_deep_research",
+  "items": [
+    {
+      "id": "DI-01",
+      "name": "kalman_dynamic_hedge",
+      "description": "用 Kalman Filter 替代静态 OLS 估计动态 hedge ratio",
+      "predicted_difficulty": "medium",
+      "status": "planned",
+      "implementation_traps": [],
+      "llm_common_errors": [],
+      "oracle_approach": ""
+    },
+    {
+      "id": "DI-02",
+      "name": "ou_halflife_entry_threshold",
+      "description": "用 OU 过程拟合 spread，基于 half-life 动态调整入场 z-score 阈值",
+      "predicted_difficulty": "medium-hard",
+      "status": "planned",
+      "implementation_traps": [],
+      "llm_common_errors": [],
+      "oracle_approach": ""
+    },
+    {
+      "id": "DI-03",
+      "name": "transaction_costs_slippage",
+      "description": "加入交易成本（固定佣金 + 市价滑点），调整 position sizing",
+      "predicted_difficulty": "medium",
+      "status": "planned",
+      "implementation_traps": [],
+      "llm_common_errors": [],
+      "oracle_approach": ""
+    },
+    {
+      "id": "DI-04",
+      "name": "regime_detection_coint_break",
+      "description": "滚动 Engle-Granger 检测 cointegration breakdown，发现 break 时强制平仓",
+      "predicted_difficulty": "hard",
+      "status": "planned",
+      "implementation_traps": [],
+      "llm_common_errors": [],
+      "oracle_approach": ""
+    },
+    {
+      "id": "DI-05",
+      "name": "multi_pair_portfolio_correlation",
+      "description": "选多对 pair 构成组合，对 pair 间相关性做约束，限制同向暴露",
+      "predicted_difficulty": "hard",
+      "status": "planned",
+      "implementation_traps": [],
+      "llm_common_errors": [],
+      "oracle_approach": ""
+    }
+  ]
+}

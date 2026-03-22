@@ -1,0 +1,73 @@
+{
+  "task": "kalman-pairs-trading",
+  "escalation_log": [
+    {
+      "version": "v1_base",
+      "oracle": 1.0,
+      "timestamp": "2026-03-22T02:39:38",
+      "note": "First pass, 1 run"
+    },
+    {
+      "version": "v1_base",
+      "haiku_pass_rate": 1.0,
+      "verdict": "ESCALATE to v2",
+      "timestamp": "2026-03-22T03:02:00"
+    },
+    {
+      "version": "v2_tc",
+      "oracle": 1.0,
+      "timestamp": "2026-03-22T05:12:50",
+      "note": "v2 oracle pass. Instruction tightened (no pseudocode). DI-02: 0.05% tx cost added. Haiku calibration running."
+    }
+  ],
+  "versions": {
+    "v1_base": {
+      "items": [
+        "DI-01"
+      ],
+      "oracle": {
+        "reward": 1.0,
+        "runs": 1,
+        "job_id": "f76c1ffe",
+        "timestamp": "2026-03-22T02:39:38"
+      },
+      "haiku": {
+        "reward": 1.0,
+        "runs": 1,
+        "pass_rate": 1.0,
+        "note": "Too easy — instruction too explicit (step-by-step pseudocode)"
+      },
+      "sonnet": {
+        "reward": null,
+        "runs": 0,
+        "pass_rate": null
+      },
+      "status": "too_easy_escalate"
+    },
+    "v2_tc": {
+      "items": [
+        "DI-01",
+        "DI-02"
+      ],
+      "di_02": "Transaction cost 0.05%/side — agent must deduct from P&L and metrics",
+      "oracle": {
+        "reward": 1.0,
+        "runs": 1,
+        "job_id": "2026-03-22__05-12-50",
+        "timestamp": "2026-03-22T05:12:50"
+      },
+      "haiku": {
+        "reward": null,
+        "runs": 0,
+        "pass_rate": null,
+        "note": "Running (PID 180064 on server)"
+      },
+      "sonnet": {
+        "reward": null,
+        "runs": 0,
+        "pass_rate": null
+      },
+      "status": "haiku_calibrating"
+    }
+  }
+}
