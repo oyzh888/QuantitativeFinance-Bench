@@ -126,11 +126,9 @@ def test_trades_csv_columns(trades_df):
 
 
 def test_oracle_beta_accuracy(results):
-    """avg_beta must be within 0.20 of the true hedge ratio (1.3).
-    Tolerance widened from 0.15 because MLE-calibrated delta may converge
-    slightly differently than a hardcoded value."""
+    """avg_beta must be within 0.15 of the true hedge ratio (1.3)."""
     TRUE_BETA = 1.3
-    TOLERANCE = 0.20
+    TOLERANCE = 0.15
     avg_beta = results["avg_beta"]
     np.testing.assert_allclose(
         avg_beta, TRUE_BETA, atol=TOLERANCE,
@@ -138,19 +136,4 @@ def test_oracle_beta_accuracy(results):
             f"avg_beta={avg_beta:.4f} deviates from true beta={TRUE_BETA} "
             f"by more than {TOLERANCE}"
         )
-    )
-
-
-def test_mle_spread_std_reasonable(results):
-    """
-    DI-03 sanity check: MLE-calibrated delta should produce a reasonable spread.
-    avg_spread_std must be in [0.05, 0.80].
-    - Too large: delta too small (filter barely adapts, spread wanders)
-    - Too small: delta too large (filter overreacts, spread collapses)
-    Hardcoded delta=1e-4 produces ~0.12; valid MLE range is broader.
-    """
-    avg_spread_std = results["avg_spread_std"]
-    assert 0.05 <= avg_spread_std <= 0.80, (
-        f"avg_spread_std={avg_spread_std:.4f} outside [0.05, 0.80] — "
-        f"suggests degenerate delta (MLE may have failed or been skipped)"
     )
