@@ -13,6 +13,18 @@ You are given daily closing prices for two assets. Implement a complete pairs tr
 
 ## Algorithm
 
+### Step 0: MLE Calibration of delta
+
+Before running the full Kalman filter, find the optimal `delta` by maximizing the Kalman filter log-likelihood on the **first 250 rows** of data.
+
+Search over `delta ∈ [1e-6, 1e-2]`. For a given delta, run the Kalman filter on the first 250 rows, collecting at each timestep `t` the innovation `ν_t = price_A[t] - H[t] @ x_prior` and innovation variance `S_t = (H[t] @ P_prior @ H[t].T + R).item()`. The log-likelihood is:
+
+```
+log_likelihood = sum over t of [ -0.5 * (log(2π * S_t) + ν_t² / S_t) ]
+```
+
+Use a scalar optimization method to find `delta*` that maximizes this log-likelihood. Print the found value. Use `delta*` for the full Kalman filter run in Step 1.
+
 ### Step 1: Kalman Filter for Dynamic Hedge Ratio
 
 Implement a manual numpy Kalman filter (do NOT use pykalman or filterpy).
@@ -27,7 +39,7 @@ where `H[t] = np.array([[1.0, price_B[t]]])` — shape (1, 2)
 **Initialization:**
 - `x_0 = np.zeros(2)`
 - `P_0 = np.eye(2) * 1e6` (vague prior)
-- `delta = 1e-4`
+- `delta`: optimal value found via MLE (see Step 0 below)
 - `Q = (delta / (1 - delta)) * np.eye(2)` (process noise covariance)
 - `R = np.var(np.diff(price_A[:30]))` (observation noise variance, scalar)
 
