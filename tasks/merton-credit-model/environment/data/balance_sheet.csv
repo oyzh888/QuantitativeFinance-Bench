@@ -1,0 +1,11 @@
+company_id,total_debt,equity_book_value,industry
+COMP_01,94.5,118.292898,Technology
+COMP_02,100.45,107.518777,Industrials
+COMP_03,106.0,97.133458,Energy
+COMP_04,111.15,87.14189,Healthcare
+COMP_05,114.0,79.399408,Utilities
+COMP_06,116.55,71.974854,Consumer
+COMP_07,118.8,64.894621,Materials
+COMP_08,120.75,58.241078,Telecom
+COMP_09,122.4,52.050162,Transport
+COMP_10,123.75,46.362362,RealEstate
