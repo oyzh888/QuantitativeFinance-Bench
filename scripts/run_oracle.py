@@ -24,16 +24,38 @@ from novita_sandbox.code_interpreter import Sandbox
 from novita_sandbox.core.sandbox.filesystem.filesystem import WriteEntry
 
 # Paths
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TASKS_DIR = REPO_ROOT / "tasks"
-JOBS_DIR  = REPO_ROOT / "jobs"
+REPO_ROOT     = Path(__file__).resolve().parent.parent
+TASKS_DIR     = REPO_ROOT / "tasks"
+WORKTREES_DIR = REPO_ROOT.parent / "worktrees"  # ../worktrees/
+JOBS_DIR      = REPO_ROOT / "jobs"
+
+
+def find_task_dir(task_name: str) -> Path:
+    """Find task directory: check main repo first, then all worktrees."""
+    # 1. Main repo tasks/
+    candidate = TASKS_DIR / task_name
+    if candidate.exists():
+        return candidate
+
+    # 2. Worktrees: ../worktrees/*/tasks/<task-name>
+    if WORKTREES_DIR.exists():
+        for wt in sorted(WORKTREES_DIR.iterdir()):
+            candidate = wt / "tasks" / task_name
+            if candidate.exists():
+                return candidate
+
+    return None
 
 
 def run_oracle(task_name: str) -> dict:
-    task_dir = TASKS_DIR / task_name
-    if not task_dir.exists():
-        print(f"ERROR: Task directory not found: {task_dir}")
+    task_dir = find_task_dir(task_name)
+    if task_dir is None:
+        print(f"ERROR: Task '{task_name}' not found in tasks/ or worktrees/")
+        print(f"  Searched: {TASKS_DIR}")
+        if WORKTREES_DIR.exists():
+            print(f"  Searched: {WORKTREES_DIR}/*/tasks/")
         sys.exit(1)
+    print(f"  Task dir: {task_dir}")
 
     # Validate required files
     solve_sh     = task_dir / "solution" / "solve.sh"
@@ -144,7 +166,25 @@ def run_oracle(task_name: str) -> dict:
             print(f"        ⚠️ Could not read reward: {e}")
             reward = 0.0
 
-        # Also try to read results.json from the agent's output
+        # 5b. Download ALL artifacts from /app/output/
+        print("  [5b] Downloading artifacts...")
+        artifacts_dir = job_dir / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        try:
+            # List files in /app/output
+            output_files = sandbox.files.list("/app/output")
+            for f in output_files:
+                fname = f.name if hasattr(f, 'name') else str(f).split('/')[-1]
+                try:
+                    content = sandbox.files.read(f"/app/output/{fname}")
+                    (artifacts_dir / fname).write_text(content)
+                    print(f"        ↓ artifacts/{fname}")
+                except Exception as e:
+                    print(f"        ⚠️ Could not download {fname}: {e}")
+        except Exception as e:
+            print(f"        ⚠️ Could not list /app/output: {e}")
+
+        # Also save results.json separately at job root for quick access
         try:
             agent_results = sandbox.files.read("/app/output/results.json")
             (job_dir / "agent_results.json").write_text(agent_results)
@@ -210,7 +250,13 @@ def run_oracle(task_name: str) -> dict:
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python3 scripts/run_oracle.py <task-name>")
-        print(f"Available tasks: {sorted(d.name for d in TASKS_DIR.iterdir() if d.is_dir())}")
+        all_tasks = set(d.name for d in TASKS_DIR.iterdir() if d.is_dir())
+        if WORKTREES_DIR.exists():
+            for wt in WORKTREES_DIR.iterdir():
+                td = wt / "tasks"
+                if td.exists():
+                    all_tasks.update(d.name for d in td.iterdir() if d.is_dir())
+        print(f"Available tasks: {sorted(all_tasks)}")
         sys.exit(1)
 
     task = sys.argv[1]
