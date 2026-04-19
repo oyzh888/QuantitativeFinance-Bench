@@ -51,27 +51,65 @@ c6id nodes will wait forever — there are simply no nodes in the pool.
 
 c5d.18xlarge has 5 nodes with 20 free units, but our project doesn't have c5d quota.
 
+## DinD Job Creation Issues
+
+### What Worked (2026-04-19)
+- **A10G preemptible DinD**: Created 3 jobs on g5.12xlarge with `enable_docker=True`,
+  `disable_split_node_capacity=True`, 4 GPUs each. Took 2-5 minutes to schedule.
+- The init scripts on shared FS (`/sensei-fs-3/.../scripts/init_machine_*.sh`) ran successfully.
+
+### What Failed
+- **A100-40GB (p4d) preemptible**: Jobs showed as FAILED (run_status=6) with 0 allocated ranks.
+  Initiative quota shows `alloc=0` for p4d, meaning no quota available.
+- **H200 (p5en) non-preemptible**: Also failed despite 67 available quota GPUs.
+  Possibly the `disable_split_node_capacity` flag wasn't set in earlier attempts.
+- **Running Docker on non-DinD H200**: `dockerd` fails with iptables permission denied.
+  Using `--iptables=false --bridge=none` starts Docker but containers can't be created
+  ("failed to create default sandbox: operation not permitted").
+
+### Critical Auth Fix
+The Bedrock auth token must be the **ABSK-prefixed** gateway token (from `$AWS_BEARER_TOKEN_BEDROCK`
+as set by the Pluto environment), NOT the raw JWT from `$PLUTO_AUTH_TOKEN`. Initial runs failed
+with "Invalid API Key format: Must start with pre-defined prefix" because we exported the
+raw JWT instead of the ABSK token.
+
 ## Recommended Approach
 
-### Option A: Use A10G GPU Nodes for DinD (best availability)
-- A10G has **5 free GPUs** with 58% utilization (lowest of all GPU types)
-- Create preemptible A10G jobs with DinD enabled
+### Use A10G DinD Nodes (proven working)
+- A10G (g5.12xlarge) has **5 free GPUs** with 58% utilization
+- Create preemptible A10G jobs with `enable_docker=True`, full node (4 GPUs)
+- Run multiple Harbor benchmarks in parallel per machine (`MAX_PARALLEL=5`)
 - We waste the GPU but get Docker access reliably
-- Cost: 1 GPU per benchmark run
+- **This is what works**: 3 machines × 5 parallel tasks = 15 concurrent benchmarks
 
-### Option B: Use One Large DinD Node for Multiple Benchmarks
-- Create **one** A10G or A100 preemptible DinD job
-- SSH into it and run **multiple Harbor benchmarks in parallel** via Docker
-- Most efficient: 1 node runs N benchmarks concurrently
-- The Harbor tasks are CPU-bound (LLM inference is remote API calls)
-- **This is the recommended approach**
+## Experiment Results
 
-### Option C: Run on Current Machine
-- Current machine is H200 but **does NOT have DinD privileges**
-- `dockerd` fails with iptables permission denied
-- Would need to request DinD on the existing interactive job
+### Full Sonnet 4 Batch (16 tasks, 2026-04-19)
 
-## Experiment Results (Completed)
+Run on 3 DinD machines (A10G preemptible), 5 tasks parallel per machine.
+
+| Task | Reward | Input Tokens | Output Tokens |
+|------|--------|-------------|---------------|
+| american-option-fd-new | **0.0** | 17,378 | 5,897 |
+| barrier-garch-var | **0.325** | 307,567 | 6,224 |
+| bollinger-backtest-aapl | **1.0** | 286,558 | 6,650 |
+| cta-basel-capital | **0.083** | 302,522 | 7,883 |
+| fama-french-factor-model-new | **1.0** | 518,554 | 8,474 |
+| hull-white-swaption | **0.0** | 120,090 | 11,350 |
+| kelly-var-sizing | **0.0** | ? | ? |
+| mc-greek-surface-1 | **0.0** | ? | ? |
+| mc-greeks-surface | **0.0** | ? | ? |
+| momentum-backtest | **1.0** | 161,067 | 3,886 |
+| regime-cta-vol-target | **0.0** | 68,888 | 305 |
+| regime-riskparity-cvar | **0.519** | 294,393 | 5,122 |
+| sentiment-factor-alpha | **0.0** | 68,330 | 288 |
+| sma-crossover-spy | **1.0** | 213,560 | 4,930 |
+| stochvol-implied-surface-new | *pending* | — | — |
+| structured-note-risk | **N/A** | ? | ? |
+
+**Summary**: 4/16 tasks scored 1.0, 2 partial (barrier=0.325, regime-riskparity=0.519, cta-capital=0.083). 9 tasks scored 0.0.
+
+### Earlier Single-Task Results
 
 | Trial | Model | Task | Reward | Input Tokens | Output Tokens |
 |-------|-------|------|--------|-------------|---------------|
@@ -83,10 +121,12 @@ c5d.18xlarge has 5 nodes with 20 free units, but our project doesn't have c5d qu
 | fb-v3 | Sonnet 4 | kelly-var-sizing | **0.0** | 904,640 | 12,853 |
 
 ### Key Observations
-1. **Sonnet 4/4.5 solve simpler tasks** (momentum, SMA) with perfect scores and low token usage
-2. **Haiku 4.5 burns 10-20x more tokens** on hard tasks and still fails — it thrashes
-3. **Harder quant tasks** (hull-white, option-pricing, kelly) remain unsolved across all models
-4. **Token efficiency varies wildly**: Sonnet 4.5 used 99K tokens for a perfect score vs Haiku's 1.9M for zero
+1. **Sonnet 4 solves 4/16 tasks perfectly** (sma, momentum, bollinger, fama-french)
+2. **Partial credit on 3 tasks**: barrier-garch-var (0.325), regime-riskparity (0.519), cta-capital (0.083)
+3. **9 tasks score 0.0** — quant finance tasks are hard (option pricing, stochastic vol, greeks)
+4. **Token efficiency varies wildly**: momentum used 161K tokens for 1.0 vs hull-white 120K for 0.0
+5. **Some tasks fail very quickly** (sentiment, regime-cta with <70K tokens) suggesting immediate code errors
+6. **Bollinger improved** from 0.175 (earlier) to 1.0 — possibly task/eval changes or better prompting
 
 ## Pluto SDK Breaking Changes
 
