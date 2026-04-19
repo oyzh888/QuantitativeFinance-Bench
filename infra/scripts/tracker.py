@@ -400,6 +400,42 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
                 matched_exp_id = exp_id
                 break
 
+        # Detect errors: only real infrastructure/API failures
+        error_detail = ""
+        exception_file = trial_dir / "exception.txt"
+        if exception_file.exists():
+            exc_text = exception_file.read_text().strip()
+            for exc_line in reversed(exc_text.split("\n")):
+                exc_line = exc_line.strip()
+                if exc_line and not exc_line.startswith("File "):
+                    # Only keep meaningful errors, not "stderr: None"
+                    if "TimeoutError" in exc_line or "API Error" in exc_line or "invalid" in exc_line.lower():
+                        error_detail = exc_line[:200]
+                    break
+
+        # Check agent log for API errors (e.g. invalid model ID)
+        agent_log = trial_dir / "agent" / f"{agent_name}.txt"
+        if not error_detail and agent_log.exists() and input_tokens == 0 and output_tokens == 0:
+            try:
+                log_text = agent_log.read_text()
+                import re
+                m = re.search(r'"text":"(API Error[^"]{0,200})"', log_text)
+                if m:
+                    error_detail = m.group(1)
+                elif '"is_error":true' in log_text:
+                    m = re.search(r'"result":"([^"]{0,200})"', log_text)
+                    if m:
+                        error_detail = m.group(1)
+            except Exception:
+                pass
+
+        # Classify: true errors are infrastructure failures, not task failures
+        # - API errors (invalid model, auth failure) → is_error
+        # - Timeouts → is_error
+        # - Zero tokens + zero reward (agent never ran) → is_error
+        # - Has tokens but reward=0 → task failure, NOT an error
+        is_error = bool(error_detail) or (input_tokens == 0 and output_tokens == 0 and reward == 0 and tests_total == 0)
+
         result = {
             "schema_version": "1",
             "experiment_id": matched_exp_id or f"unplanned_{trial_dir.name}",
@@ -425,6 +461,9 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
             "verifier_time_sec": round(verifier_time, 1),
             "total_time_sec": round(total_time, 1),
             "failed_tests": failed_tests,
+            "error_detail": error_detail,
+            "is_error": is_error,
+            "trial_path": str(trial_dir),
             "artifacts": {
                 "result_json": str(result_json.relative_to(trials_dir.parent)),
                 "trajectory": str((trial_dir / "agent" / "trajectory.json").relative_to(trials_dir.parent)),
@@ -564,10 +603,20 @@ def _refresh_tracker(experiments: list[dict], results: list[dict]):
                     res = result_map[exp["experiment_id"]]
                     pr = res.get("pass_rate", 0)
                     rw = res.get("reward", 0)
-                    icon = "✅" if rw == 1 else "🟡"  # 🟡 = partial (pass_rate > 0 but reward=0)
-                    if pr == 0:
+                    is_err = res.get("is_error", False)
+                    if is_err:
+                        err_short = res.get("error_detail", "unknown")[:40]
+                        icon = "💥"
+                        row += f" {icon} ERR |"
+                    elif rw == 1:
+                        icon = "✅"
+                        row += f" {icon} {pr:.0%} |"
+                    elif pr > 0:
+                        icon = "🟡"
+                        row += f" {icon} {pr:.0%} |"
+                    else:
                         icon = "❌"
-                    row += f" {icon} {pr:.0%} |"
+                        row += f" {icon} 0% |"
                 elif status == "claimed":
                     runner = exp.get("claimed_by", "?")
                     row += f" 🔵 {runner} |"
@@ -589,6 +638,52 @@ def _refresh_tracker(experiments: list[dict], results: list[dict]):
         lines.append("|--------------|--------|------------|")
         for e in claimed_exps:
             lines.append(f"| `{e['experiment_id']}` | {e['claimed_by']} | {e.get('claimed_at', '-')[:19]} |")
+        lines.append("")
+
+    # ─── Detailed Experiment Log ────────────────────────────────────────
+    done_exps = [e for e in experiments if e["status"] == "done" and e["experiment_id"] in result_map]
+    if done_exps:
+        lines.append("## Experiment Log")
+        lines.append("")
+        lines.append("Detailed results for each completed experiment.")
+        lines.append("")
+        lines.append("| Experiment ID | Reward | Pass Rate | Tokens (in/out) | Cost | Time | Error | Trial Path |")
+        lines.append("|--------------|--------|-----------|-----------------|------|------|-------|------------|")
+        for e in sorted(done_exps, key=lambda x: x["experiment_id"]):
+            res = result_map[e["experiment_id"]]
+            eid = e["experiment_id"]
+            rw = res.get("reward", 0)
+            pr = res.get("pass_rate", 0)
+            in_tok = res.get("input_tokens", 0)
+            out_tok = res.get("output_tokens", 0)
+            cost = res.get("cost_usd", 0)
+            total_t = res.get("total_time_sec", 0)
+            err = res.get("error_detail", "")
+            trial_p = res.get("trial_path", "")
+            # Shorten trial path for readability
+            if trial_p:
+                trial_short = trial_p.split("/trials/")[-1] if "/trials/" in trial_p else trial_p.split("/")[-1]
+            else:
+                trial_short = "-"
+            err_short = err[:60] + "..." if len(err) > 60 else (err or "-")
+            # Format time
+            time_str = f"{total_t:.0f}s" if total_t else "-"
+            lines.append(
+                f"| `{eid}` | {rw:.2f} | {pr:.0%} ({res.get('tests_passed',0)}/{res.get('tests_total',0)}) "
+                f"| {in_tok:,}/{out_tok:,} | ${cost:.2f} | {time_str} | {err_short} | `{trial_short}` |"
+            )
+        lines.append("")
+
+    # ─── Error Summary ──────────────────────────────────────────────────
+    error_results = [result_map[e["experiment_id"]] for e in done_exps
+                     if e["experiment_id"] in result_map and result_map[e["experiment_id"]].get("is_error")]
+    if error_results:
+        lines.append("## Error Details")
+        lines.append("")
+        lines.append("Experiments that failed due to infrastructure/API errors (not task failures).")
+        lines.append("")
+        for res in error_results:
+            lines.append(f"- **`{res['experiment_id']}`**: {res.get('error_detail', 'unknown error')}")
         lines.append("")
 
     # ─── How to contribute ───────────────────────────────────────────────
