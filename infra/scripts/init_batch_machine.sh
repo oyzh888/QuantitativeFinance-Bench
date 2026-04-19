@@ -76,7 +76,19 @@ uv pip install "harbor @ git+https://github.com/harbor-framework/harbor" litellm
 
 # ── Step 6: Build sandbox + patch ──
 echo ">>> Step 6: Build sandbox Docker image"
-docker build -t finance-bench-sandbox:latest -f docker/sandbox.Dockerfile . 2>&1 | tail -10
+SANDBOX_TAR="$SHARED_FS/finance-bench-sandbox.tar"
+if [ -f "$SANDBOX_TAR" ]; then
+    echo "Loading sandbox image from cache: $SANDBOX_TAR"
+    docker load < "$SANDBOX_TAR" 2>&1 | tail -3
+else
+    for attempt in 1 2 3; do
+        if docker build -t finance-bench-sandbox:latest -f docker/sandbox.Dockerfile . 2>&1 | tail -10; then
+            docker save finance-bench-sandbox:latest > "$SANDBOX_TAR" 2>/dev/null && echo "Saved image cache" || true
+            break
+        fi
+        echo "Build attempt $attempt failed, retrying in 30s..."; sleep 30
+    done
+fi
 
 COMPOSE_BASE=".venv/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-base.yaml"
 if [ -f "$COMPOSE_BASE" ] && ! grep -q "network_mode" "$COMPOSE_BASE"; then

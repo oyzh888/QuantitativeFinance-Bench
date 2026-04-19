@@ -24,7 +24,7 @@ WORKDIR="${WORKDIR:-/tmp/finance-bench}"
 FB_MODEL="${FB_MODEL:-bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0}"
 FB_AGENT="${FB_AGENT:-claude-code}"
 FB_TRIAL_PREFIX="${FB_TRIAL_PREFIX:-fb-batch}"
-MAX_PARALLEL="${MAX_PARALLEL:-5}"
+MAX_PARALLEL="${MAX_PARALLEL:-50}"
 TRIALS_DIR="$SHARED_FS/trials"
 
 # All 17 tasks

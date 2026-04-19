@@ -335,7 +335,14 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
         # Extract fields from Harbor result.json
         task_name = raw.get("task_name", "")
         agent_name = raw.get("agent_info", {}).get("name", "")
-        model_info = raw.get("agent_info", {}).get("model_info", "")
+        model_info_raw = raw.get("agent_info", {}).get("model_info", "")
+        # model_info can be a dict {"name": ..., "provider": ...} or a string
+        if isinstance(model_info_raw, dict):
+            model_info = model_info_raw.get("name", "")
+            model_provider = model_info_raw.get("provider", "")
+        else:
+            model_info = str(model_info_raw)
+            model_provider = ""
 
         # Extract token counts
         agent_ctx = raw.get("agent_result") or {}
@@ -389,7 +396,7 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
         for exp_id, exp in exp_map.items():
             if (exp["task"] == task_name and
                 exp["status"] in ("claimed", "pending") and
-                model_info and model_info in exp["model"]):
+                model_info and (model_info in exp["model"] or exp["model"].endswith(model_info))):
                 matched_exp_id = exp_id
                 break
 
@@ -402,7 +409,7 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
             "run_at": raw.get("started_at", datetime.now(timezone.utc).isoformat()),
             "task": task_name,
             "agent": agent_name,
-            "model": model_info,
+            "model": f"{model_provider}/{model_info}" if model_provider else model_info,
             "model_short": trial_dir.name,
             "round": 1,
             "reward": reward,
@@ -413,7 +420,7 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_tokens": cache_tokens,
-            "num_turns": agent_ctx.get("metadata", {}).get("num_turns", 0),
+            "num_turns": (agent_ctx.get("metadata") or {}).get("num_turns", 0),
             "agent_time_sec": round(agent_time, 1),
             "verifier_time_sec": round(verifier_time, 1),
             "total_time_sec": round(total_time, 1),
