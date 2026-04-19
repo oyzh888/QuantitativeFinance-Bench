@@ -7,13 +7,21 @@
 #
 # Prerequisites:
 #   - Docker available (Docker-in-Docker mode enabled)
-#   - AWS Bedrock credentials (if using Bedrock models):
-#     Set AWS_BEARER_TOKEN_BEDROCK in environment or in $SHARED_FS/.bedrock_env
+#   - Provider credentials (auto-detected from FB_MODEL):
+#     Bedrock:  AWS_BEARER_TOKEN_BEDROCK or $SHARED_FS/.bedrock_env
+#     Gemini:   GEMINI_VERTEX_TOKEN + GEMINI_VERTEX_BASE_URL (or auto via foundry_aws_gateway)
+#     Azure:    AZURE_API_KEY + AZURE_API_BASE (or auto via foundry_aws_gateway)
+#     Other:    OPENAI_API_KEY + OPENAI_API_BASE
 #
 # Environment variables:
 #   FB_TASK        — task path, e.g. "tasks/american-option-fd-new" (default: all)
 #   FB_TRIAL_NAME  — trial name prefix (default: fb-run)
 #   FB_MODEL       — model identifier (default: bedrock sonnet 4)
+#                    Examples:
+#                      bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+#                      openai/google/gemini-2.5-flash
+#                      openai/google/gemini-2.5-pro
+#                      azure/gpt-5
 #   FB_AGENT       — agent type (default: claude-code)
 #   FB_REPO_BRANCH — git branch to clone (default: ke/eval_workflow)
 #   FB_REPO_URL    — repo URL (default: QuantitativeFinance-Bench)
@@ -201,17 +209,6 @@ fi
 
 # ── Step 7: Load credentials + run benchmark ─────────────────────────────
 echo ">>> Step 7: Run benchmark"
-export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=us-west-2
-export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
-
-# Load Bedrock credentials from shared FS (if available)
-if [ -f "$SHARED_FS/.bedrock_env" ]; then
-    source "$SHARED_FS/.bedrock_env"
-    echo "Loaded Bedrock token from shared FS (length: ${#AWS_BEARER_TOKEN_BEDROCK})"
-else
-    echo "WARN: No .bedrock_env found, using ambient credentials"
-fi
 
 TRIALS="$LOGDIR/trials"
 mkdir -p "$TRIALS"
@@ -229,25 +226,96 @@ fi
 HARBOR_CMD+=(-a "$FB_AGENT")
 HARBOR_CMD+=(-m "$FB_MODEL")
 
-# Pass env vars into Harbor's inner Docker container via --ae
-# This is critical: without these, the agent inside the sandbox has no auth
-HARBOR_CMD+=(--ae "AWS_BEARER_TOKEN_BEDROCK=$AWS_BEARER_TOKEN_BEDROCK")
-HARBOR_CMD+=(--ae "CLAUDE_CODE_USE_BEDROCK=1")
-HARBOR_CMD+=(--ae "AWS_REGION=us-west-2")
-HARBOR_CMD+=(--ae "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1")
-HARBOR_CMD+=(--ae "DISABLE_PROMPT_CACHING=1")
+# ── Provider-specific credential setup ──
+# Detect provider from model string and configure accordingly
+case "$FB_MODEL" in
+    openai/google/gemini-*)
+        # Gemini via Vertex AI OpenAI-compatible endpoint
+        # Requires: GEMINI_VERTEX_TOKEN and GEMINI_VERTEX_BASE_URL
+        #   Option A: Set them in environment before running this script
+        #   Option B: Use foundry_auth.py to auto-generate (needs foundry_aws_gateway)
+        if [ -z "$GEMINI_VERTEX_TOKEN" ] && command -v python3 &>/dev/null; then
+            echo "Auto-generating Gemini credentials via foundry_aws_gateway..."
+            if pip3 show foundry-aws-gateway &>/dev/null 2>&1; then
+                eval "$(python3 "$(dirname "$0")/scripts/foundry_auth.py" gemini 2>/dev/null)"
+            elif [ -f "$SHARED_FS/.gemini_env" ]; then
+                source "$SHARED_FS/.gemini_env"
+            fi
+        fi
+        if [ -z "$GEMINI_VERTEX_TOKEN" ]; then
+            echo "FATAL: Gemini model requires GEMINI_VERTEX_TOKEN"; exit 1
+        fi
+        echo "Gemini auth OK (token length: ${#GEMINI_VERTEX_TOKEN})"
+        # litellm uses OPENAI_API_KEY and OPENAI_API_BASE for openai/ models
+        HARBOR_CMD+=(--ae "OPENAI_API_KEY=$GEMINI_VERTEX_TOKEN")
+        HARBOR_CMD+=(--ae "OPENAI_API_BASE=$GEMINI_VERTEX_BASE_URL")
+        ;;
 
-# Disable extended thinking (Bedrock multi-turn serialization bug)
-HARBOR_CMD+=(--agent-kwarg max_thinking_tokens=0)
+    azure/gpt-*)
+        # Azure OpenAI (GPT-5) via foundry_aws_gateway
+        if [ -z "$AZURE_API_KEY" ] && command -v python3 &>/dev/null; then
+            echo "Auto-generating Azure OpenAI credentials via foundry_aws_gateway..."
+            if pip3 show foundry-aws-gateway &>/dev/null 2>&1; then
+                eval "$(python3 "$(dirname "$0")/scripts/foundry_auth.py" azure 2>/dev/null)"
+            elif [ -f "$SHARED_FS/.azure_env" ]; then
+                source "$SHARED_FS/.azure_env"
+            fi
+        fi
+        if [ -z "$AZURE_API_KEY" ]; then
+            echo "FATAL: Azure model requires AZURE_API_KEY"; exit 1
+        fi
+        echo "Azure auth OK (endpoint: $AZURE_API_BASE)"
+        HARBOR_CMD+=(--ae "AZURE_API_KEY=$AZURE_API_KEY")
+        HARBOR_CMD+=(--ae "AZURE_API_BASE=$AZURE_API_BASE")
+        HARBOR_CMD+=(--ae "AZURE_API_VERSION=${AZURE_API_VERSION:-2025-04-01-preview}")
+        # Codex agent uses OPENAI_API_KEY/OPENAI_BASE_URL; map Azure creds
+        HARBOR_CMD+=(--ae "OPENAI_API_KEY=$AZURE_API_KEY")
+        HARBOR_CMD+=(--ae "OPENAI_BASE_URL=${AZURE_API_BASE}/openai")
+        ;;
+
+    bedrock/*|us.anthropic.*)
+        # AWS Bedrock (Claude models)
+        export CLAUDE_CODE_USE_BEDROCK=1
+        export AWS_REGION=us-west-2
+        export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
+
+        # Load Bedrock credentials from shared FS (if available)
+        if [ -f "$SHARED_FS/.bedrock_env" ]; then
+            source "$SHARED_FS/.bedrock_env"
+            echo "Loaded Bedrock token from shared FS (length: ${#AWS_BEARER_TOKEN_BEDROCK})"
+        else
+            echo "WARN: No .bedrock_env found, using ambient credentials"
+        fi
+
+        HARBOR_CMD+=(--ae "AWS_BEARER_TOKEN_BEDROCK=$AWS_BEARER_TOKEN_BEDROCK")
+        HARBOR_CMD+=(--ae "CLAUDE_CODE_USE_BEDROCK=1")
+        HARBOR_CMD+=(--ae "AWS_REGION=us-west-2")
+        HARBOR_CMD+=(--ae "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1")
+        HARBOR_CMD+=(--ae "DISABLE_PROMPT_CACHING=1")
+        # Disable extended thinking (Bedrock multi-turn serialization bug)
+        HARBOR_CMD+=(--agent-kwarg max_thinking_tokens=0)
+        ;;
+
+    *)
+        # Generic: pass through any OPENAI_API_KEY / OPENAI_API_BASE from env
+        if [ -n "$OPENAI_API_KEY" ]; then
+            HARBOR_CMD+=(--ae "OPENAI_API_KEY=$OPENAI_API_KEY")
+        fi
+        if [ -n "$OPENAI_API_BASE" ]; then
+            HARBOR_CMD+=(--ae "OPENAI_API_BASE=$OPENAI_API_BASE")
+        fi
+        echo "Using generic model: $FB_MODEL"
+        ;;
+esac
 
 HARBOR_CMD+=(--trial-name "$FB_TRIAL_NAME")
 HARBOR_CMD+=(--trials-dir "$TRIALS")
 
 # Log the command but mask credentials
 HARBOR_CMD_DISPLAY="${HARBOR_CMD[*]}"
-if [ -n "$AWS_BEARER_TOKEN_BEDROCK" ]; then
-    HARBOR_CMD_DISPLAY="${HARBOR_CMD_DISPLAY//$AWS_BEARER_TOKEN_BEDROCK/***REDACTED***}"
-fi
+for _secret in "$AWS_BEARER_TOKEN_BEDROCK" "$GEMINI_VERTEX_TOKEN" "$AZURE_API_KEY" "$OPENAI_API_KEY"; do
+    [ -n "$_secret" ] && HARBOR_CMD_DISPLAY="${HARBOR_CMD_DISPLAY//$_secret/***REDACTED***}"
+done
 echo "Running: $HARBOR_CMD_DISPLAY"
 "${HARBOR_CMD[@]}" 2>&1
 
