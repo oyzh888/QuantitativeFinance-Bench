@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fb-result-v1",
+  "title": "Finance-Bench Experiment Result",
+  "description": "Standardized result format for QuantitativeFinance-Bench experiments",
+  "type": "object",
+  "required": [
+    "schema_version", "experiment_id", "run_id", "run_by", "run_machine",
+    "run_at", "task", "agent", "model", "model_short", "round",
+    "reward", "tests_passed", "tests_total", "pass_rate",
+    "cost_usd", "input_tokens", "output_tokens",
+    "agent_time_sec", "total_time_sec"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "description": "Schema version"
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+_r[0-9]+$",
+      "description": "Unique experiment ID: {model_short}_{task}_r{round}, e.g. sonnet-4_american-option-fd-new_r1"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID for this specific run attempt"
+    },
+    "run_by": {
+      "type": "string",
+      "description": "Who ran this experiment (e.g. alice, bob)"
+    },
+    "run_machine": {
+      "type": "string",
+      "description": "Machine identifier (e.g. cloud-cpu-pod-1, local-macbook)"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the run started"
+    },
+    "task": {
+      "type": "string",
+      "description": "Task name matching tasks/ directory"
+    },
+    "agent": {
+      "type": "string",
+      "enum": ["claude-code", "finance-zero", "finance-agent", "codex-cli", "gemini-cli", "openhands"],
+      "description": "Agent type"
+    },
+    "model": {
+      "type": "string",
+      "description": "Full model identifier (e.g. bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0)"
+    },
+    "model_short": {
+      "type": "string",
+      "description": "Human-readable short model name (e.g. sonnet-4, gpt-5)"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Round number (1-indexed), for repeated experiments"
+    },
+    "agent_config": {
+      "type": "object",
+      "description": "Agent-specific configuration snapshot",
+      "additionalProperties": true
+    },
+    "reward": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Binary reward from Harbor verifier (0 or 1)"
+    },
+    "tests_passed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of pytest tests passed"
+    },
+    "tests_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of pytest tests"
+    },
+    "pass_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "tests_passed / tests_total"
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total API cost in USD"
+    },
+    "input_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cache_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "num_turns": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of agent conversation turns"
+    },
+    "agent_time_sec": {
+      "type": "number",
+      "description": "Agent execution time in seconds"
+    },
+    "verifier_time_sec": {
+      "type": "number",
+      "description": "Verifier execution time in seconds"
+    },
+    "total_time_sec": {
+      "type": "number",
+      "description": "Total wall-clock time in seconds"
+    },
+    "failed_tests": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "List of failed test names"
+    },
+    "error": {
+      "type": ["string", "null"],
+      "description": "Error message if experiment failed"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form notes about this run"
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "result_json": {"type": "string"},
+        "trajectory": {"type": "string"},
+        "ctrf": {"type": "string"}
+      },
+      "description": "Paths to raw Harbor output files"
+    }
+  }
+}

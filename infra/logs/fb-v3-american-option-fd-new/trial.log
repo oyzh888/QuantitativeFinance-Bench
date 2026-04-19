@@ -147,4 +147,4 @@ then run it with `python3 /app/solve.py`. Avoid using `python -c` with inline co
 complex scripts with quotes and f-strings are difficult to pass correctly via the shell.
 ' 2>&1 </dev/null | tee /logs/agent/claude-code.txt
 Command outputs captured
-Wrote Claude Code trajectory to /sensei-fs-3/users/zouyang/fb-harbor/trials/fb-v3/agent/trajectory.json
+Wrote Claude Code trajectory to /tmp/fb-harbor/trials/fb-v3/agent/trajectory.json

@@ -1,20 +1,20 @@
-# Harbor on Pluto — Infrastructure for Running Benchmarks
+# Infrastructure for Running Harbor Benchmarks
 
-Run QuantitativeFinance-Bench (Harbor agent benchmarks) on Adobe Pluto cluster.
+Run QuantitativeFinance-Bench (Harbor agent benchmarks) on Docker-in-Docker cloud instances.
 
 ## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  Pluto Pod (c6id.24xlarge CPU or A10G GPU, Docker-in-Docker)      │
+│  Cloud Instance (CPU or GPU, Docker-in-Docker enabled)             │
 │                                                                    │
-│  init_harbor_dind.sh (init script, auto-executed on pod start)     │
-│  ├── 1. Bootstrap pip (container has no pip)                       │
-│  ├── 2. Install Docker Compose V2 plugin (from shared FS)         │
+│  init_harbor_dind.sh (init script, auto-executed on instance)      │
+│  ├── 1. Bootstrap pip (container may lack pip)                     │
+│  ├── 2. Install Docker Compose V2 plugin                          │
 │  ├── 3. Install uv + Python 3.12                                  │
 │  ├── 4. Clone QuantitativeFinance-Bench repo                      │
-│  ├── 5. Create venv, install Harbor + litellm + pytest             │
-│  ├── 6. Build sandbox Docker image + patch network_mode: host      │
+│  ├── 5. Create venv, install Harbor + litellm + pytest            │
+│  ├── 6. Build sandbox Docker image + patch network_mode: host     │
 │  └── 7. Run Harbor benchmark                                      │
 │      │                                                             │
 │      ▼                                                             │
@@ -26,134 +26,141 @@ Run QuantitativeFinance-Bench (Harbor agent benchmarks) on Adobe Pluto cluster.
 │  │  └── Verifier: pytest validates outputs → reward 0 or 1      │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                    │
-│  Results → /sensei-fs-3/users/zouyang/fb-harbor/trials/            │
+│  Results → $SHARED_FS/trials/                                      │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
-### One-time setup (from any Pluto machine with Docker)
+### Prerequisites
+
+- Docker-in-Docker enabled instance (full-node allocation recommended)
+- AWS Bedrock credentials (if using Bedrock models)
+
+### One-time setup
 
 ```bash
-# 1. Copy Docker Compose V2 plugin to shared FS
-mkdir -p /sensei-fs-3/users/zouyang/fb-harbor
-cp /usr/libexec/docker/cli-plugins/docker-compose \
-   /sensei-fs-3/users/zouyang/fb-harbor/docker-compose-plugin
-
-# 2. Save Bedrock credentials
+# Save Bedrock credentials to shared filesystem
+mkdir -p /path/to/shared-fs
 echo "export AWS_BEARER_TOKEN_BEDROCK='${AWS_BEARER_TOKEN_BEDROCK}'" \
-  > /sensei-fs-3/users/zouyang/fb-harbor/.bedrock_env
-chmod 600 /sensei-fs-3/users/zouyang/fb-harbor/.bedrock_env
+  > /path/to/shared-fs/.bedrock_env
+chmod 600 /path/to/shared-fs/.bedrock_env
 ```
 
-### Launch a benchmark run
+### Run a benchmark
 
 ```bash
-cd infra/pluto
+# Set environment variables
+export SHARED_FS=/path/to/shared-fs
+export FB_TASK=tasks/american-option-fd-new   # or leave empty for all tasks
+export FB_TRIAL_NAME=my-trial
+export FB_MODEL=bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0
+export FB_AGENT=claude-code
 
-# Quick test: single task (auto-picks cheapest available allocation)
-python3 launch.py --name fb-test --task tasks/american-option-fd-new
+# Run the init script
+bash infra/init_harbor_dind.sh
 
-# Full benchmark: all tasks
-python3 launch.py --name fb-full
+# Monitor
+tail -f /path/to/shared-fs/init-log.txt
 
-# Force GPU nodes
-python3 launch.py --name fb-gpu --strategy gpu
-
-# Check status
-python3 launch.py --status <job_id>
-
-# Stop
-python3 launch.py --stop <job_id>
+# Check results
+cat /path/to/shared-fs/trials/*/result.json | python3 -m json.tool
 ```
 
-### Monitor
+## Experiment Tracking
+
+See [TRACKER.md](TRACKER.md) for the full experiment grid and results.
 
 ```bash
-# Live logs
-tail -f /sensei-fs-3/users/zouyang/fb-harbor/init-log.txt
+# Initialize experiment plan (12 models x 16 tasks x 3 rounds = 576 experiments)
+python3 infra/scripts/tracker.py init
 
-# Results
-ls /sensei-fs-3/users/zouyang/fb-harbor/trials/
-cat /sensei-fs-3/users/zouyang/fb-harbor/trials/*/result.json | python3 -m json.tool
+# Claim experiments for yourself
+python3 infra/scripts/tracker.py claim --runner your-name --count 16 --model cc-sonnet-4
+
+# Submit results from Harbor trials
+python3 infra/scripts/tracker.py submit --runner your-name --trials-dir /path/to/trials/
+
+# Regenerate TRACKER.md
+python3 infra/scripts/tracker.py refresh
+
+# Show summary
+python3 infra/scripts/tracker.py status
 ```
-
-## Allocation Strategy
-
-`launch.py` uses a tiered fallback strategy to minimize cost:
-
-| Tier | Instance | Priority | Cost | Notes |
-|------|----------|----------|------|-------|
-| 1 (default) | c6id.24xlarge CPU | P2 preemptible | Free | 720 quota in GAI-415 |
-| 2 | c6id.24xlarge CPU | P0 guaranteed | Quota-charged | Guaranteed allocation |
-| 3 | g5.12xlarge A10G | P2 preemptible | Free | Smallest GPU full-node |
-
-**Why full-node?** Docker-in-Docker (`enable_docker=True`) on Pluto requires
-privileged mode, which requires full-node allocation. CPU nodes are preferred
-since Harbor/agents don't need GPU.
-
-If a tier gets `INSUFFICIENT_RESOURCES` for >60 seconds, it automatically
-falls back to the next tier. Override with `--strategy`:
-- `default` — CPU preemptible → CPU guaranteed → GPU preemptible
-- `gpu` — GPU preemptible → GPU guaranteed
-- `guaranteed` — CPU non-preemptible only
 
 ## File Structure
 
 ```
 infra/
-├── README.md              # This file
-├── pluto/
-│   ├── launch.py          # One-command launcher with fallback
-│   ├── pluto_client.py    # Pluto gRPC job management SDK
-│   └── manage.py          # Low-level job CLI (create/start/stop/status/resources)
-init_harbor_dind.sh        # DinD pod init script (auto-runs on pod start)
+├── README.md                  # This file
+├── TRACKER.md                 # Experiment grid (auto-generated)
+├── EXPERIMENTS.md             # Manual experiment log with links
+├── experiments.jsonl          # Experiment plan data
+├── schema/
+│   └── fb-result-v1.json     # Result schema (JSON Schema)
+├── scripts/
+│   └── tracker.py             # Experiment tracker CLI
+├── results/                   # Submitted result files (JSONL)
+├── logs/                      # Raw Harbor logs (git LFS)
+│   ├── fb-v3-american-option-fd-new/
+│   └── fb-claude-s4-american-option-fd-new/
+init_harbor_dind.sh            # DinD bootstrap script
 ```
 
 ## Key Technical Decisions
 
-### 1. CPU-only is the default
+### 1. CPU-only by default
 
-Harbor + Claude Code agent is purely API-call driven — no GPU needed. Using
-c6id.24xlarge saves GPU resources for actual training workloads. The preemptible
-(P2) tier is quota-free, making benchmark runs essentially free.
+Harbor + Claude Code agent is purely API-call driven — no GPU needed. CPU instances
+are cheaper and more available. GPU instances are only needed if the benchmark tasks
+themselves require GPU computation.
 
 ### 2. Bedrock auth passthrough
 
 The Bedrock token must reach three layers deep:
 ```
-Pluto pod env → Harbor process → Harbor's inner Docker container → Claude Code
+Host env → Harbor process → Harbor's inner Docker container → Claude Code
 ```
 
-The init script sources the token from shared FS, and passes it into the Harbor
-container via `--ae AWS_BEARER_TOKEN_BEDROCK=$TOKEN`. Without `--ae`, the
-inner container sees `apiKeySource: "none"` and Claude Code fails.
+The init script loads credentials and passes them into the Harbor container via
+`--ae AWS_BEARER_TOKEN_BEDROCK=$TOKEN`. Without `--ae`, the inner container has
+no authentication and the agent fails.
 
 ### 3. Docker Compose V2 plugin
 
-Pluto's Ubuntu Docker 28.2.2 package doesn't include the Compose V2 plugin,
-but Harbor requires `docker compose` (V2 syntax). We pre-copy the 74MB binary
-to shared FS and install it in the init script.
+Some Docker installations don't include the Compose V2 plugin, but Harbor requires
+`docker compose` (V2 syntax). The init script auto-downloads the binary if needed.
 
 ### 4. network_mode: host
 
-k8s DinD pods can't use Docker's default bridge networking. The init script
-patches Harbor's `docker-compose-base.yaml` to add `network_mode: host`.
+k8s DinD pods can't use Docker's default bridge networking. The init script patches
+Harbor's `docker-compose-base.yaml` to add `network_mode: host`.
 
-### 5. Extended thinking disabled
+### 5. Docker compose cp timeout
+
+Harbor's `docker compose cp` operations (upload/download files) can hang indefinitely
+in DinD environments. The init script patches Harbor's `docker.py` to add
+`timeout_sec=300` to the 4 cp operations. Important: the general `exec()` method
+is NOT patched — the agent needs unlimited execution time.
+
+### 6. Extended thinking disabled
 
 Bedrock has a multi-turn serialization bug with extended thinking — the second
-API call fails because Claude Code strips thinking blocks from conversation
-history, but Bedrock requires them. Fix: `--agent-kwarg max_thinking_tokens=0`.
+API call fails because the agent strips thinking blocks from conversation history,
+but Bedrock requires them. Fix: `--agent-kwarg max_thinking_tokens=0`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `INSUFFICIENT_RESOURCES` | Use `--strategy default` (tries multiple tiers) |
-| `Docker not available` | Ensure job was created with `--enable-docker` |
-| `docker compose: unknown` | Check that `docker-compose-plugin` exists on shared FS |
+| `Docker not available` | Ensure Docker-in-Docker is enabled |
+| `docker compose: unknown` | Init script auto-downloads; check network access |
 | Agent exit code 1 | Check `--ae` flags — Bedrock token might not be passed through |
-| `apiKeySource: "none"` | Normal for Bedrock; check that `AWS_BEARER_TOKEN_BEDROCK` is in `--ae` |
-| Verifier hangs | Known issue with `network_mode: host`; agent results are still valid |
-| Preempted mid-run | Use `--strategy guaranteed` for important runs |
+| `apiKeySource: "none"` | Normal for Bedrock; check `AWS_BEARER_TOKEN_BEDROCK` in `--ae` |
+| Verifier hangs | Known DinD issue — init script patches cp timeout to fix this |
+
+## Related Docs
+
+- [Experiment Tracker](TRACKER.md) — Full experiment grid
+- [Experiment Log](EXPERIMENTS.md) — Manual run log with log links
+- [Harbor docs](https://harborframework.com/)

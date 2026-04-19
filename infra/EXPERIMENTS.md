@@ -1,13 +1,15 @@
-# Experiment Tracker
+# Experiment Log
 
-All Harbor benchmark runs on Pluto cluster.
+Manual log of Harbor benchmark runs with links to raw logs.
+
+For the full experiment grid, see [TRACKER.md](TRACKER.md).
 
 ## Runs
 
 | Date | Trial | Task | Agent | Model | Provider | Tokens (in/out) | Tests | Reward | Duration | Infra | Logs |
 |------|-------|------|-------|-------|----------|-----------------|-------|--------|----------|-------|------|
-| 2026-04-19 | fb-v3 | american-option-fd-new | claude-code 2.1.114 | claude-sonnet-4 | Bedrock | 904K / 12.8K | 41/54 (75.9%) | 0.0 | 5m56s | c6id.24xlarge CPU preemptible | [result](logs/fb-v3-american-option-fd-new/result.json) · [tests](logs/fb-v3-american-option-fd-new/verifier/test-stdout.txt) · [trajectory](logs/fb-v3-american-option-fd-new/agent/claude-code.txt) · [session](logs/fb-v3-american-option-fd-new/agent/sessions/projects/-app/) |
-| 2026-04-19 | fb-claude-s4 | american-option-fd-new | claude-code 2.1.114 | claude-sonnet-4 | Bedrock | ~1.6M / ~31K | N/A (verifier hung) | N/A | ~23m | c6id.24xlarge CPU preemptible | [trajectory](logs/fb-claude-s4-american-option-fd-new/agent/claude-code.txt) · [session](logs/fb-claude-s4-american-option-fd-new/agent/sessions/) |
+| 2026-04-19 | fb-v3 | american-option-fd-new | claude-code 2.1.114 | claude-sonnet-4 | Bedrock | 904K / 12.8K | 41/54 (75.9%) | 0.0 | 5m56s | c6id.24xlarge CPU | [result](logs/fb-v3-american-option-fd-new/result.json) · [tests](logs/fb-v3-american-option-fd-new/verifier/test-stdout.txt) · [trajectory](logs/fb-v3-american-option-fd-new/agent/claude-code.txt) · [session](logs/fb-v3-american-option-fd-new/agent/sessions/projects/-app/) |
+| 2026-04-19 | fb-claude-s4 | american-option-fd-new | claude-code 2.1.114 | claude-sonnet-4 | Bedrock | ~1.6M / ~31K | N/A (verifier hung) | N/A | ~23m | c6id.24xlarge CPU | [trajectory](logs/fb-claude-s4-american-option-fd-new/agent/claude-code.txt) · [session](logs/fb-claude-s4-american-option-fd-new/agent/sessions/) |
 
 ## Failed Tests (fb-v3)
 
@@ -27,17 +29,9 @@ All Harbor benchmark runs on Pluto cluster.
 | Summary | test_summary_no_div_call_diff | FAIL |
 | Summary | test_summary_boundary_at_T | FAIL |
 
-## Infrastructure
-
-- **Cluster**: Pluto (colligo-laser02-prod-uw2)
-- **Instance**: c6id.24xlarge CPU, 80 cores, preemptible (P2 quota-free)
-- **Docker**: Docker-in-Docker, full-node allocation
-- **Shared FS**: `/sensei-fs-3/users/zouyang/fb-harbor/`
-- **Launcher**: `infra/pluto/launch.py` with tiered fallback
-
 ## Quick Links
 
 - [Infra README](README.md) — Setup and usage guide
-- [Launch script](pluto/launch.py) — One-command launcher
-- [Init script](init_harbor_dind.sh) — DinD pod bootstrap
+- [Experiment Tracker](TRACKER.md) — Full experiment grid
+- [Init script](../init_harbor_dind.sh) — DinD bootstrap
 - [Harbor docs](https://harborframework.com/)
