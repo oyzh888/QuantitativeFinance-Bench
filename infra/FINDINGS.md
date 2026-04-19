@@ -104,10 +104,10 @@ Run on 3 DinD machines (A10G preemptible), 5 tasks parallel per machine.
 | regime-riskparity-cvar | **0.519** | 294,393 | 5,122 |
 | sentiment-factor-alpha | **0.0** | 68,330 | 288 |
 | sma-crossover-spy | **1.0** | 213,560 | 4,930 |
-| stochvol-implied-surface-new | *pending* | — | — |
+| stochvol-implied-surface-new | **N/A** | 777,948 | 21,261 |
 | structured-note-risk | **N/A** | ? | ? |
 
-**Summary**: 4/16 tasks scored 1.0, 2 partial (barrier=0.325, regime-riskparity=0.519, cta-capital=0.083). 9 tasks scored 0.0.
+**Summary**: 4/16 perfect (1.0), 3 partial (barrier=0.325, regime-riskparity=0.519, cta=0.083), 7 scored 0.0, 2 errored (N/A).
 
 ### Earlier Single-Task Results
 
