@@ -390,15 +390,38 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
             except (json.JSONDecodeError, KeyError):
                 pass
 
+        # Parse round from trial directory name
+        # e.g. fb-s4-r2-bollinger → round 2, fb-s4-bollinger → round 1
+        import re as _re
+        _round_match = _re.search(r'-r(\d+)-', trial_dir.name)
+        trial_round = int(_round_match.group(1)) if _round_match else 1
+
         # Try to match to experiment plan
-        # (best effort — match by task + model + round if possible)
+        # Match by task + model + round
+        # Model matching: strip date-version suffix for fuzzy match
+        # e.g. "claude-sonnet-4-5-20250514-v1:0" matches "claude-sonnet-4-5-20250929-v1:0"
+        def _model_base(m):
+            """Strip date-version suffix: claude-sonnet-4-5-20250514-v1:0 → claude-sonnet-4-5"""
+            import re as _re2
+            return _re2.sub(r'-\d{8}-v\d+:\d+$', '', m.split('/')[-1])
+
+        model_base = _model_base(model_info) if model_info else ""
+
         matched_exp_id = None
         for exp_id, exp in exp_map.items():
             if (exp["task"] == task_name and
-                exp["status"] in ("claimed", "pending") and
-                model_info and (model_info in exp["model"] or exp["model"].endswith(model_info))):
-                matched_exp_id = exp_id
-                break
+                exp["round"] == trial_round and
+                model_info and (
+                    model_info in exp["model"] or
+                    exp["model"].endswith(model_info) or
+                    _model_base(exp["model"]) == model_base
+                )):
+                # Prefer claimed/pending, but accept done too (for re-submit)
+                if exp["status"] in ("claimed", "pending"):
+                    matched_exp_id = exp_id
+                    break
+                elif matched_exp_id is None:
+                    matched_exp_id = exp_id
 
         # Detect errors: only real infrastructure/API failures
         error_detail = ""
@@ -447,7 +470,7 @@ def _extract_harbor_results(trials_dir: Path, exp_map: dict, runner: str) -> lis
             "agent": agent_name,
             "model": f"{model_provider}/{model_info}" if model_provider else model_info,
             "model_short": trial_dir.name,
-            "round": 1,
+            "round": trial_round,
             "reward": reward,
             "tests_passed": tests_passed,
             "tests_total": tests_total,
@@ -531,160 +554,152 @@ def _refresh_tracker(experiments: list[dict], results: list[dict]):
     lines.append("")
     lines.append(f"`{bar}` {done}/{total}")
     lines.append("")
-    lines.append(f"| Status | Count |")
-    lines.append(f"|--------|-------|")
-    lines.append(f"| ⬜ Pending | {pending} |")
-    lines.append(f"| 🔵 Running | {claimed} |")
-    lines.append(f"| ✅ Done | {done} |")
-    lines.append(f"| ❌ Error | {error} |")
-    lines.append("")
 
-    # ─── Results Summary (if any done) ───────────────────────────────────
-    if done > 0:
-        lines.append("## Results Summary")
-        lines.append("")
+    # ─── Summary: Model × Task completion matrix ────────────────────────
+    from collections import defaultdict, Counter
 
-        # Model × pass_rate summary table
-        lines.append("### Pass Rate by Model (avg across tasks)")
-        lines.append("")
-        lines.append("| Model | Agent | Avg Pass Rate | Avg Reward | Avg Cost | # Done |")
-        lines.append("|-------|-------|--------------|------------|----------|--------|")
-
-        for m in models:
-            m_results = [result_map[e["experiment_id"]] for e in experiments
-                        if e["model_short"] == m["short"] and e["status"] == "done"
-                        and e["experiment_id"] in result_map]
-            if m_results:
-                avg_pr = sum(r["pass_rate"] for r in m_results) / len(m_results)
-                avg_rw = sum(r["reward"] for r in m_results) / len(m_results)
-                avg_cost = sum(r.get("cost_usd", 0) for r in m_results) / len(m_results)
-                lines.append(f"| {m['short']} | {m['agent']} | {avg_pr:.1%} | {avg_rw:.2f} | ${avg_cost:.2f} | {len(m_results)} |")
-
-        lines.append("")
-
-    # ─── Master Grid: Model × Task ──────────────────────────────────────
-    lines.append("## Experiment Grid")
-    lines.append("")
-    lines.append("Each cell shows status for rounds 1-3. Click experiment ID for details.")
-    lines.append("")
-    lines.append("Legend: ⬜ pending · 🔵 running · ✅ done (pass_rate) · ❌ error")
-    lines.append("")
-
-    # One table per model (wide table with all tasks would be unreadable)
+    # Per-model summary
+    model_stats = {}
     for m in models:
-        lines.append(f"### {m['short']} (`{m['agent']}`)")
-        lines.append("")
+        m_exps = [e for e in experiments if e["model_short"] == m["short"]]
+        m_done = [e for e in m_exps if e["status"] == "done" and e["experiment_id"] in result_map]
+        m_run  = [e for e in m_exps if e["status"] == "claimed"]
+        m_pend = [e for e in m_exps if e["status"] == "pending"]
+        m_err  = [e for e in m_exps if e["status"] == "error"]
+        m_results = [result_map[e["experiment_id"]] for e in m_done]
+        avg_rw = sum(r["reward"] for r in m_results) / len(m_results) if m_results else 0
+        avg_pr = sum(r["pass_rate"] for r in m_results) / len(m_results) if m_results else 0
+        total_tok = sum(r.get("input_tokens", 0) + r.get("output_tokens", 0) for r in m_results)
+        model_stats[m["short"]] = {
+            "total": len(m_exps), "done": len(m_done), "run": len(m_run),
+            "pend": len(m_pend), "err": len(m_err),
+            "avg_rw": avg_rw, "avg_pr": avg_pr, "tokens": total_tok,
+        }
 
-        # Header
-        header = "| Task |"
-        separator = "|------|"
-        for r in range(1, max_round + 1):
-            header += f" R{r} |"
-            separator += "------|"
-        lines.append(header)
-        lines.append(separator)
+    lines.append("### By Model")
+    lines.append("")
+    lines.append("| Model | Agent | Done | Run | Pend | Avg Reward | Avg Pass | Tokens |")
+    lines.append("|-------|-------|------|-----|------|-----------|----------|--------|")
+    for m in models:
+        s = model_stats[m["short"]]
+        if s["total"] == 0:
+            continue
+        done_str = f"**{s['done']}/{s['total']}**"
+        rw_str = f"{s['avg_rw']:.2f}" if s["done"] else "-"
+        pr_str = f"{s['avg_pr']:.0%}" if s["done"] else "-"
+        tok_str = f"{s['tokens']:,}" if s["tokens"] else "-"
+        lines.append(f"| {m['short']} | {m['agent']} | {done_str} | {s['run']} | {s['pend']} | {rw_str} | {pr_str} | {tok_str} |")
+    lines.append("")
 
-        for task in tasks:
-            # Short task name for readability
-            task_short = task[:30]
-            row = f"| `{task_short}` |"
+    # Per-task summary
+    task_stats = {}
+    for task in tasks:
+        t_exps = [e for e in experiments if e["task"] == task]
+        t_done = [e for e in t_exps if e["status"] == "done" and e["experiment_id"] in result_map]
+        t_results = [result_map[e["experiment_id"]] for e in t_done]
+        avg_rw = sum(r["reward"] for r in t_results) / len(t_results) if t_results else 0
+        best_rw = max((r["reward"] for r in t_results), default=0)
+        task_stats[task] = {
+            "total": len(t_exps), "done": len(t_done),
+            "remain": len(t_exps) - len(t_done),
+            "avg_rw": avg_rw, "best_rw": best_rw,
+        }
 
-            for r in range(1, max_round + 1):
-                key = (m["short"], task, r)
-                exp = exp_lookup.get(key)
-                if not exp:
-                    row += " - |"
-                    continue
+    lines.append("### By Task")
+    lines.append("")
+    lines.append("| Task | Done | Remain | Best Reward | Avg Reward |")
+    lines.append("|------|------|--------|-------------|------------|")
+    for task in tasks:
+        s = task_stats[task]
+        done_str = f"{s['done']}/{s['total']}"
+        best_str = f"{s['best_rw']:.2f}" if s["done"] else "-"
+        avg_str = f"{s['avg_rw']:.2f}" if s["done"] else "-"
+        lines.append(f"| {task} | {done_str} | {s['remain']} | {best_str} | {avg_str} |")
+    lines.append("")
 
-                status = exp["status"]
-                emoji = STATUS_EMOJI.get(status, "?")
+    # ─── Single Flat Table: every experiment = one row ─────────────────────
+    all_exps = sorted(experiments, key=lambda e: (e["task"], e["model_short"], e["round"]))
 
-                if status == "done" and exp["experiment_id"] in result_map:
-                    res = result_map[exp["experiment_id"]]
-                    pr = res.get("pass_rate", 0)
-                    rw = res.get("reward", 0)
-                    is_err = res.get("is_error", False)
-                    if is_err:
-                        err_short = res.get("error_detail", "unknown")[:40]
-                        icon = "💥"
-                        row += f" {icon} ERR |"
-                    elif rw == 1:
-                        icon = "✅"
-                        row += f" {icon} {pr:.0%} |"
-                    elif pr > 0:
-                        icon = "🟡"
-                        row += f" {icon} {pr:.0%} |"
-                    else:
-                        icon = "❌"
-                        row += f" {icon} 0% |"
-                elif status == "claimed":
-                    runner = exp.get("claimed_by", "?")
-                    row += f" 🔵 {runner} |"
-                elif status == "error":
-                    row += f" ❌ err |"
-                else:
-                    row += f" {emoji} |"
+    # Assign global run_id (sequential)
+    global_run_id = 0
+    run_id_map = {}
+    for e in sorted(experiments, key=lambda x: (x.get("completed_at") or "9999", x["experiment_id"])):
+        global_run_id += 1
+        run_id_map[e["experiment_id"]] = global_run_id
 
-            lines.append(row)
+    lines.append("## Experiment Table")
+    lines.append("")
+    lines.append("| # | Task | Model | Agent | R | Status | Runner | Started | Finished | Reward | Pass | Tests | In Tok | Out Tok | Time | Trial |")
+    lines.append("|---|------|-------|-------|---|--------|--------|---------|----------|--------|------|-------|--------|---------|------|-------|")
 
-        lines.append("")
+    def _fmt_ts(ts):
+        """'2026-04-19T10:21:49.708323Z' → '04-19 10:21'"""
+        if not ts:
+            return "-"
+        try:
+            return ts[5:16].replace("T", " ")
+        except Exception:
+            return ts[:16]
 
-    # ─── Claimed experiments detail ──────────────────────────────────────
-    claimed_exps = [e for e in experiments if e["status"] == "claimed"]
-    if claimed_exps:
-        lines.append("## Currently Running")
-        lines.append("")
-        lines.append("| Experiment ID | Runner | Claimed At |")
-        lines.append("|--------------|--------|------------|")
-        for e in claimed_exps:
-            lines.append(f"| `{e['experiment_id']}` | {e['claimed_by']} | {e.get('claimed_at', '-')[:19]} |")
-        lines.append("")
+    for e in all_exps:
+        rid = run_id_map[e["experiment_id"]]
+        task = e["task"]
+        model = e["model_short"]
+        agent = e["agent"]
+        rnd = e["round"]
+        status = e["status"]
+        runner = e.get("claimed_by") or "-"
+        started = _fmt_ts(e.get("claimed_at"))
+        finished = _fmt_ts(e.get("completed_at"))
 
-    # ─── Detailed Experiment Log ────────────────────────────────────────
-    done_exps = [e for e in experiments if e["status"] == "done" and e["experiment_id"] in result_map]
-    if done_exps:
-        lines.append("## Experiment Log")
-        lines.append("")
-        lines.append("Detailed results for each completed experiment.")
-        lines.append("")
-        lines.append("| Experiment ID | Reward | Pass Rate | Tokens (in/out) | Cost | Time | Error | Trial Path |")
-        lines.append("|--------------|--------|-----------|-----------------|------|------|-------|------------|")
-        for e in sorted(done_exps, key=lambda x: x["experiment_id"]):
+        if status == "done" and e["experiment_id"] in result_map:
             res = result_map[e["experiment_id"]]
-            eid = e["experiment_id"]
             rw = res.get("reward", 0)
             pr = res.get("pass_rate", 0)
+            tp = res.get("tests_passed", 0)
+            tt = res.get("tests_total", 0)
             in_tok = res.get("input_tokens", 0)
             out_tok = res.get("output_tokens", 0)
-            cost = res.get("cost_usd", 0)
             total_t = res.get("total_time_sec", 0)
-            err = res.get("error_detail", "")
             trial_p = res.get("trial_path", "")
-            # Shorten trial path for readability
-            if trial_p:
-                trial_short = trial_p.split("/trials/")[-1] if "/trials/" in trial_p else trial_p.split("/")[-1]
-            else:
-                trial_short = "-"
-            err_short = err[:60] + "..." if len(err) > 60 else (err or "-")
-            # Format time
-            time_str = f"{total_t:.0f}s" if total_t else "-"
-            lines.append(
-                f"| `{eid}` | {rw:.2f} | {pr:.0%} ({res.get('tests_passed',0)}/{res.get('tests_total',0)}) "
-                f"| {in_tok:,}/{out_tok:,} | ${cost:.2f} | {time_str} | {err_short} | `{trial_short}` |"
-            )
-        lines.append("")
+            trial_short = trial_p.split("/trials/")[-1] if "/trials/" in trial_p else ""
 
-    # ─── Error Summary ──────────────────────────────────────────────────
-    error_results = [result_map[e["experiment_id"]] for e in done_exps
-                     if e["experiment_id"] in result_map and result_map[e["experiment_id"]].get("is_error")]
-    if error_results:
-        lines.append("## Error Details")
-        lines.append("")
-        lines.append("Experiments that failed due to infrastructure/API errors (not task failures).")
-        lines.append("")
-        for res in error_results:
-            lines.append(f"- **`{res['experiment_id']}`**: {res.get('error_detail', 'unknown error')}")
-        lines.append("")
+            if rw >= 1.0:
+                rw_str = f"✅ {rw:.2f}"
+            elif rw > 0:
+                rw_str = f"🟡 {rw:.2f}"
+            else:
+                rw_str = f"❌ {rw:.2f}"
+
+            time_str = f"{total_t:.0f}s" if total_t else "-"
+            trial_link = f"[link](./trials/{trial_short}/)" if trial_short else "-"
+
+            lines.append(
+                f"| {rid} | {task} | {model} | {agent} | {rnd} "
+                f"| ✅ done | {runner} | {started} | {finished} "
+                f"| {rw_str} | {pr:.0%} | {tp}/{tt} "
+                f"| {in_tok:,} | {out_tok:,} | {time_str} | {trial_link} |"
+            )
+        elif status == "claimed":
+            lines.append(
+                f"| {rid} | {task} | {model} | {agent} | {rnd} "
+                f"| 🔵 run | {runner} | {started} | - "
+                f"| - | - | - | - | - | - | - |"
+            )
+        elif status == "error":
+            lines.append(
+                f"| {rid} | {task} | {model} | {agent} | {rnd} "
+                f"| ❌ err | {runner} | {started} | {finished} "
+                f"| - | - | - | - | - | - | - |"
+            )
+        else:
+            lines.append(
+                f"| {rid} | {task} | {model} | {agent} | {rnd} "
+                f"| ⬜ | - | - | - "
+                f"| - | - | - | - | - | - | - |"
+            )
+
+    lines.append("")
 
     # ─── How to contribute ───────────────────────────────────────────────
     lines.append("## How to Contribute")
